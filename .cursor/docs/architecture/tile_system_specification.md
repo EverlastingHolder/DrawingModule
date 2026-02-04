@@ -51,7 +51,8 @@
 ### 2.3 DataActor (Background I/O & History)
 *   **WAL & History Store**: Каждое изменение (мазок, операция со слоем) записывается в WAL-журнал с CRC32c валидацией.
 *   **LZ4 Snapshot Pipeline**: Фоновое сжатие снапшотов Undo/Redo в RAM.
-*   **Memory Pressure Relay**: При системном `Memory Warning` происходит немедленный сброс (flush) всех LZ4-снапшотов из RAM на диск в `HistoryStore`.
+*   **Memory Pressure Relay**: При системном `Memory Warning` происходит немедленный сброс (flush) всех LZ4-снапшотов из RAM на диск.
+*   **IO & Disk Monitoring**: Постоянный мониторинг свободного места и управление лимитами деградации (подробнее в `reliability_persistence_specification.md`).
 *   **Atomic Saves**: Использование временных файлов, `fsync()` и `rename()` для безопасности манифеста.
 
 ### 2.4 Tile (Data Container)
@@ -97,12 +98,33 @@ func predictUnfolding(currentPos: CGPoint, velocity: CGPoint, brushRadius: CGFlo
 ## 4️⃣ Формат хранения (Persistence)
 
 *   **Unit**: Регион 4x4 (16 тайлов).
-*   **WAL Journaling**: Каждое изменение метаданных региона сначала записывается в журнал транзакций.
+*   **WAL Journaling**: Каждое изменение метаданных и данных (Block Deltas) сначала записывается в WAL-журнал. 
+    - Подробный протокол WAL и механизмы восстановления описаны в `reliability_persistence_specification.md`.
 *   **LZ4 Compression**: Сжатие Raw RGBA16Float данных перед записью. Снижает I/O на 60-80%.
+*   **Storage Resilience**:
+    - **Disk Full Monitoring**: `DataActor` блокирует запись при достижении порога < 50MB.
+    - **Atomic Saves**: Использование временных файлов и `fsync()` для всех операций с манифестом.
 
 ---
 
-## 5️⃣ Математическое ядро (Engine Math)
+## 6️⃣ Public Contracts (Public API)
+
+```swift
+public protocol TileResidencyProvider: Actor {
+    /// Фаза Handshake: подготовка резидентности для кадра.
+    func prepareResidency(for viewContext: ViewContext, layers: LayerStackSnapshot) async -> ResidencySnapshot
+    
+    /// Запрос StorageID для записи. Реализует CoW, если тайл уже существует.
+    func requestStorageForWrite(tile: TileCoord, layerID: UUID) async throws -> StorageID
+    
+    /// Освобождение ресурсов (вызывается из UndoCoordinator при удалении истории).
+    func purgeStorage(ids: Set<StorageID>) async
+}
+```
+
+---
+
+## 7️⃣ Математическое ядро (Engine Math)
 
 ### 5.1 Centripetal Catmull-Rom Spline
 Для интерполяции точек мазка используется Centripetal Catmull-Rom ($\alpha = 0.5$), так как она гарантирует отсутствие самопересечений и "петель" при резких поворотах.

@@ -56,15 +56,15 @@
 ## 4️⃣ GPU Rendering Pipeline
 
 ### 4.1 Multi-pass Brush System (Splat-Process-Composite)
-Для реализации сложных эффектов (Smudge, Blur, Dual-Brush) используется трехстадийный конвейер:
+Для реализации сложных эффектов (Smudge, Blur, Dual-Brush) используется трехстадийный конвейер, оптимизированный для **SRAM (Imageblocks)**:
 
 1.  **Pass 1: Splatting (Mask/Stamp Generation)**:
     *   Отрисовка формы кисти в промежуточный `AccumulationBuffer` (R16Float).
     *   Использование `Memoryless` текстур для экономии Bandwidth.
 2.  **Pass 2: Processing (Smudge/Blur/Texture)**:
-    *   **Compute Kernel**: Обработка накопленной маски или чтение из `BackBuffer` для Smudge.
-    *   **Blur**: Двухпроходный (Vertical/Horizontal) или Tile-based бокс-фильтр в `threadgroup` памяти.
-    *   **Smudge**: Чтение цвета "под кистью" из предыдущего состояния и смешивание.
+    *   **Compute Kernel / Tile Shader**: Обработка накопленной маски или чтение из `BackBuffer` для Smudge.
+    *   **Imageblock Usage**: Для тайлов 256x256 выполнение происходит частями 32x32 (Hardware Tiles), чтобы данные оставались в SRAM.
+    *   **Smudge**: Чтение цвета "под кистью" из предыдущего состояния и смешивание в `threadgroup` памяти.
 3.  **Pass 3: Final Compositing**:
     *   Смешивание результата с целевым слоем (`MTLSparseTexture`).
     *   Применение динамического цвета, шума и наложения текстур.
@@ -80,26 +80,38 @@
 
 ---
 
-## 5️⃣ Smudge Module & Register Pressure
+## 5️⃣ Smudge Module & Optimization
 
-### 5.1 Register Pressure Limits (120 FPS Target)
-Smudge-ядро — критическая точка производительности. Для поддержания 120 FPS на Apple Silicon (M2/M3):
+### 5.1 Register Pressure & SRAM (120 FPS Target)
+Smudge-ядро — критическая точка производительности. Для поддержания 120 FPS на Apple Silicon:
 *   **Limit**: Максимум **32 регистра** на поток для обеспечения 100% occupancy.
+*   **Threadgroup Memory**: Использование 8KB - 16KB `threadgroup` памяти для кэширования области холста под кистью. Это исключает повторные VRAM-запросы при расчете smudge-эффекта.
 *   **Optimization**: 
     - Избегание `switch/case` в ядре.
-    - Использование `half` вместо `float` для промежуточных вычислений цвета.
-    - Вынесение тяжелой математики (например, сложные кривые давления) в Pre-pass или lookup-текстуры.
+    - Использование `half` вместо `float` для всех вычислений.
 
-### 5.2 Smudge Logic (Performance Hardened)
-1.  **Max Radius**: Ограничение в **256px**.
-2.  **Sampling Step**: `spacing = max(base_spacing, radius * 0.1)`.
-3.  **Energy Preservation**: 
-    - `float3 mixedColor = mix(canvasColor, smudgeSample, strength * pressure)`.
-    - Ограничение Delta Brightness (max 4.0) для HDR.
+### 5.2 Smudge Logic (Hardened)
+1.  **Capture Phase**: Загрузка 32x32 блока в `threadgroup` память.
+2.  **Energy Preservation**: 
+    - `half3 mixedColor = mix(canvasColor, smudgeSample, strength * pressure)`.
+    - Ограничение Delta Brightness для HDR.
 
 ---
 
-## 6️⃣ Pseudocode: Multi-pass Encoding
+## 6️⃣ Synchronization (Pipeline Hardening)
+
+### 6.1 MTLFence & MTLEvent
+Для межкадровой синхронизации и предотвращения Race Conditions:
+*   **MTLFence**: Используется для синхронизации между Render и Compute энкодерами в рамках одного `MTLCommandBuffer`.
+*   **MTLEvent**: Обеспечивает Triple Buffering. CPU не начинает запись в `MTLBuffer` кадра `N+3`, пока GPU не сигнализирует о завершении кадра `N`.
+*   **Triple Buffering**: Применяется к:
+    - `Geometry Buffers` (координаты мазков).
+    - `ResidencySet` (список активных ресурсов).
+    - `Argument Buffers` (дескрипторы тайлов).
+
+---
+
+## 7️⃣ Pseudocode: Multi-pass Encoding
 
 ```swift
 func encodeBrushStroke(commandBuffer: MTLCommandBuffer) {
@@ -127,7 +139,31 @@ func encodeBrushStroke(commandBuffer: MTLCommandBuffer) {
 
 ---
 
-## 7️⃣ Key Principles
+## 8️⃣ Public Contracts (Public API)
+
+```swift
+public protocol StrokeProcessing: Actor {
+    /// Формирует иммутабельный снимок геометрии для текущего кадра.
+    func makeGeometrySnapshot() async -> GeometrySnapshot
+
+    /// Добавляет новые точки ввода.
+    /// Возвращает `damagedRect` (область изменений в World Space).
+    func addPoints(_ points: [StrokePoint], in layerID: UUID) async -> CGRect
+    
+    /// Завершает текущий мазок и возвращает финальный `damagedRect`.
+    func finishStroke() async -> CGRect
+    
+    /// Предиктивный расчет тайлов, которые скоро потребуются (100ms lookahead).
+    func predictAffectedTiles(pos: CGPoint, velocity: CGPoint, radius: CGFloat) async -> [TileCoord]
+    
+    /// Связь с Undo: инициирует захват состояния через координатор.
+    func requestCapture(token: TransactionToken, dirtyRect: CGRect) async throws
+}
+```
+
+---
+
+## 9️⃣ Key Principles
 
 1.  **Double for World, Float for Offset**: Идеальная точность на любых размерах.
 2.  **Zero-Copy**: Минимальный CPU overhead.

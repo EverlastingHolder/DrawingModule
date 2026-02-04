@@ -13,8 +13,9 @@
 | **God-object Risk** | UndoCoordinator calculated dirty regions and managed state. | Dirty logic moved to StrokeProcessor. | **Lead Architect**: Четкое разделение ответственности. | Чистая архитектура, облегчение тестирования. |
 
 ## Источники (база архитектуры)
-- `project_knowledge_base.md`: 4-actor model, LZ4 snapshot pipeline, Global Transaction Index, `.drawproj`.
+- `project_knowledge_base.md`: 6-actor model, LZ4 snapshot pipeline, Global Transaction Index, `.drawproj`.
 - `drawing_session_specification.md`: роли `DrawingSession`, `LayerManager`, `StrokeProcessor`, `TileSystem`, `DataActor`.
+- `residency_synchronization_specification.md`: Handshake, ResidencySnapshot, Zero-Latency Sync.
 - `layer_system_specification.md`: `LayerStackSnapshot`, разделение logical/physical.
 - `tile_system_specification.md`: тайл 256x256, регион 4x4, 3-уровневый кэш, WAL.
 - `brush_pipeline_specification.md`: multi-pass, live-stroke, 120 FPS.
@@ -43,15 +44,15 @@ Undo/Redo проектируется как транзакционный жур�
 - **BudgetController/Coalescer**: агрегация мелких мазков (Stroke Coalescing) для снижения IOPS и WA.
 - **RecoveryManager**: восстановление по манифесту/WAL.
 
-## Public Contracts (сокращенно)
+## Public Contracts
 ```swift
-public protocol UndoCoordinating: Sendable {
+public protocol UndoCoordinating: Actor {
     /// Инициализирует транзакцию. Возвращает токен для идентификации.
     func begin(label: String) async -> TransactionToken
     
     /// Захват состояния ДО мутации. 
     /// dirtyRect: область, вычисленная StrokeProcessor или LayerManager.
-    func captureBefore(_ token: TransactionToken, dirtyRect: CGRect) async throws
+    func captureBefore(_ token: TransactionToken, dirtyRect: CGRect, layerID: UUID) async throws
     
     /// Фиксация состояния ПОСЛЕ мутации. Использует область из captureBefore.
     func captureAfter(_ token: TransactionToken) async throws
@@ -179,8 +180,11 @@ public protocol UndoableAction: Sendable {
 Crash: `MARK` без `COMMIT` -> ничего не удаляем.
 
 ## Scheduling & FIFO Commit Pipeline
-- **Serial Dispatcher**: `UndoCoordinator` использует внутренний `AsyncStream` или серийный `TaskQueue` для обработки коммитов.
-  - Любой `commit()` помещается в очередь и дожидается завершения предыдущего I/O в `HistoryStore`. Это исключает гонки при реентерабельности акторов Swift 6.
+- **Serial Dispatcher**: `UndoCoordinator` использует внутренний `AsyncStream` или серийный `TaskQueue` для обработки коммитов. Это гарантирует FIFO-порядок и предотвращает гонки при реентерабельности акторов.
+  - Любой `commit()` помещается в очередь и дожидается завершения предыдущего I/O в `HistoryStore`.
+- **Adaptive Pressure Control**: 
+  - При задержках I/O (Pressure > 0.4) увеличивается агрессивность Stroke Coalescing.
+  - При критическом давлении (Pressure > 0.8) активируется режим `ThrottleInput`. Подробнее в `reliability_persistence_specification.md`.
 - **Stroke Coalescing (Adaptive Semantic Buffer)**: 
   - Мазки объединяются, пока суммарный Bounding Box не превысит 512x512 или не наступит пауза (idle) > 200мс.
 - **Backpressure**: При переполнении очереди коммитов включается режим агрессивного коалесинга.

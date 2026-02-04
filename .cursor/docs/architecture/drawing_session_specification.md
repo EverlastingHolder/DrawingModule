@@ -8,28 +8,32 @@
 
 ## 1️⃣ Архитектурная декомпозиция (Actor Isolation)
 
-Система разделена на 4 независимых домена изоляции (Swift 6 Ready):
+Система разделена на 5 независимых доменов изоляции (Swift 6 Ready):
 
 ### 1.1 DrawingSession (@MainActor)
 *   **Роль**: Оркестратор и владелец состояния.
-*   **Ответственность**: Владение `CanvasEnvironment` и `LayerManager`, координация UI, `UndoManager`.
+*   **Ответственность**: Владение `CanvasEnvironment`, `LayerManager` и `UndoCoordinator`, координация UI.
 *   **Синхронизация**: Формирует `LayerStackSnapshot` перед каждым кадром и передает его в `Compositor`.
 
-### 1.2 LayerManager (@MainActor)
+### 1.2 UndoCoordinator (Actor)
+*   **Роль**: Координатор транзакций и истории.
+*   **Ответственность**: Управление жизненным циклом транзакций (begin/commit), Stroke Coalescing, обеспечение FIFO через Serial Commit Pipeline.
+
+### 1.3 LayerManager (@MainActor)
 *   **Роль**: Менеджер структуры документа.
-*   **Ответственность**: Управление стеком слоев, их метаданными (Blending, Opacity) и иерархией. Подробнее в `layer_system_specification.md`.
+*   **Ответственность**: Управление стеком слоев, их метаданными (Blending, Opacity) и иерархией. Предоставляет снимки состояния для `UndoCoordinator`.
 
-### 1.3 StrokeProcessor (Actor)
-*   **Роль**: Фоновый вычислитель геометрии.
-*   **Ответственность**: Интерполяция сплайнов (**Centripetal Catmull-Rom** в `Double`), 2-Tier Region Binning, генерация **Zero-Copy** буферов.
+### 1.4 StrokeProcessor (Actor)
+*   **Роль**: Фоновый вычислитель геометрии и драйвер Undo-событий.
+*   **Ответственность**: Интерполяция сплайнов, 2-Tier Region Binning, расчет `damagedRect` для `captureBefore`.
 
-### 1.3 TileSystem (Actor)
-*   **Роль**: **Residency Manager** и менеджер ресурсов GPU.
-*   **Ответственность**: Управление `MTLSparseTexture`, маппинг страниц, контроль лимита VRAM (512MB).
+### 1.5 TileSystem (Actor)
+*   **Роль**: Residency Manager и менеджер ресурсов GPU.
+*   **Ответственность**: Управление `MTLSparseTexture`, маппинг страниц, Tile-Level Dirty Tracking (TLDT) для оптимизации снапшотов.
 
-### 1.4 DataActor (Actor)
+### 1.6 DataActor (Actor)
 *   **Роль**: Асинхронный I/O и компрессия.
-*   **Ответственность**: LZ4-сжатие, атомарная запись на диск, обработка Memory Pressure.
+*   **Ответственность**: LZ4-сжатие, атомарная запись WAL и манифеста, обработка HistoryStore.
 
 ---
 
@@ -68,16 +72,19 @@ public struct CanvasEnvironment: Sendable, Equatable {
     *   Использование `LayerState.opacity` и `LayerState.blendMode` как констант в Argument Buffers.
 4.  **Submission**: Отправка команд в `MTLCommandQueue`.
 
-## 4️⃣ Жизненный цикл мазка (Stroke Transaction)
+## 4️⃣ Жизненный цикл мазка (Transactional Stroke)
 
-1.  **Begin**: Захват текущих состояний тайлов. Создание Shadow-копий для `LiveBuffer`.
-2.  **Process**: Асинхронная интерполяция и биннинг в `StrokeProcessor`.
-3.  **Residency Update**: `TileSystem` подготавливает необходимые страницы Sparse-текстур.
-4.  **Update**: Рендеринг в `LiveStrokeBuffer`.
-5.  **Commit**: 
-    *   **Delta Transfer**: Измененные данные уходят в `DataActor`.
-    *   **Persistence**: LZ4-сжатие и запись в фоне (Low Priority).
-6.  **Rollback**: Очистка временных буферов без слияния с основным холстом.
+1.  **Begin**: `DrawingSession` инициирует транзакцию в `UndoCoordinator.begin()`.
+2.  **Process & Capture**: 
+    *   `StrokeProcessor` вычисляет `damagedRect`.
+    *   `UndoCoordinator.captureBefore(token, dirtyRect)` делает снапшот измененных тайлов.
+    *   `TileSystem` использует TLDT для минимизации копирования.
+3.  **Update**: Рендеринг мазка в `LiveStrokeBuffer`.
+4.  **Commit**: 
+    *   `captureAfter` захватывает финальное состояние.
+    *   `UndoCoordinator.commit()` ставит задачу в Serial Commit Pipeline.
+    *   `DataActor` сжимает данные и пишет в WAL.
+5.  **Rollback**: `UndoCoordinator.abort()` или `undo()` восстанавливает состояние из тайловых снапшотов.
 
 ---
 

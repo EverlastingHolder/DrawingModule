@@ -17,6 +17,7 @@
     *   Группировка слоев (Tree structure).
     *   Метаданные: `Opacity`, `Visibility`, `BlendMode`, `IsLocked`.
     *   Специфические свойства: `Clipping Mask`, `Adjustment Layer` данные.
+    *   **Undo Integration**: Предоставляет `LayerStackSnapshot` для `UndoCoordinator` при выполнении операций со слоями.
 *   **Связь**: Каждому логическому слою соответствует уникальный `LayerID` (UUID или Int).
 
 ### 1.2 Physical Level (`TileSystem` / `actor`)
@@ -24,6 +25,7 @@
 *   **Ответственность**:
     *   Владение `MTLSparseTexture` для каждого `LayerID`.
     *   Менеджмент `MTLHeap` (Shared Pool для всех слоев).
+    *   **Tile-centric snapshots**: Реализация Copy-on-Write (CoW) на уровне тайлов для системы Undo/Redo.
     *   Глобальное вытеснение (LRU) — страницы вытесняются из любых слоев на основе общей активности.
 *   **Связь**: Оперирует данными через `LayerID`. Не знает о "порядке" слоев или их прозрачности.
 
@@ -185,7 +187,7 @@ public final class Layer: Identifiable {
 
 ## 3️⃣ SnapshotPool & CoW (Copy-on-Write)
 
-Для управления памятью VRAM и обеспечения атомарности Undo/Redo внедряется `SnapshotPool`.
+Для управления памятью VRAM и обеспечения атомарности Undo/Redo внедряется `SnapshotPool`, интегрированный с `TileSystem`.
 
 ```swift
 /// Менеджер версионности тайлов в VRAM.
@@ -193,13 +195,14 @@ public actor SnapshotPool {
     private var registry: [StorageID: TileVersion]
     private var lruCache: LRUBuffer
     
-    /// Реализует Copy-on-Write для тайла.
-    /// Если тайл модифицируется впервые в рамках транзакции, создается его копия.
+    /// Реализует Copy-on-Write для тайла (256x256).
+    /// Если тайл модифицируется впервые в рамках транзакции, создается его копия
+    /// с использованием Tile-Level Dirty Tracking (TLDT).
     public func checkoutForWrite(tileID: TileCoord, layerID: UUID) -> StorageID {
         // Логика выделения новой страницы из MTLHeap
     }
     
-    /// Освобождает ресурсы старых поколений, если на них нет ссылок в Global Transaction Index.
+    /// Освобождает ресурсы старых поколений, если на них нет ссылок в HistoryStore.
     public func collectGarbage(activeGenerations: Set<UInt64>) {
         // Deferred Deletion ресурсов
     }
@@ -216,37 +219,39 @@ public actor SnapshotPool {
 Project.drawproj/
 ├── manifest.json          <-- Global Transaction Index (The "Source of Truth")
 ├── project.json           <-- Структура слоев, настройки холста, метаданные
-├── layers/                <-- Бинарные данные тайлов (.drawregion)
-│   ├── L1_G1.drawregion   <-- Layer 1, Generation 1
-│   └── L1_G2.drawregion   <-- Измененные тайлы Layer 1 в Generation 2
+├── history/               <-- WAL и снапшоты транзакций
+│   ├── tx_001/
+│   │   ├── manifest.json
+│   │   └── data.bin       <-- LZ4 Block Deltas (64x64)
+├── layers/                <-- Текущее состояние тайлов
 └── brushes/               <-- Кастомные текстуры кистей
 ```
 
 ---
 
-## 5️⃣ Global Transaction Index (Manifest)
+## 5️⃣ Global Transaction Index (History Store)
 
-Для обеспечения консистентности при сбоях (Crash Consistency) используется манифест поколений.
+Для обеспечения консистентности и истории Undo/Redo используется WAL-журнал.
 
 ```swift
 public struct ProjectManifest: Codable, Sendable {
-    public let lastSuccessfulGeneration: UInt64
+    public let lastCommittedLSN: UInt64
     public let transactions: [TransactionRecord]
     
     public struct TransactionRecord: Codable, Sendable {
-        public let genID: UInt64
+        public let txID: UUID
         public let timestamp: Date
-        public let modifiedFiles: [String] // Список путей к .drawregion
-        public let checksum: String        // CRC32 манифеста для валидации
+        public let affectedTiles: [TileCoord]
+        public let checksum: UInt32        // CRC32c для валидации
     }
 }
 ```
 
-### Алгоритм "Safe Save":
-1. **Write**: Новые тайлы записываются в новые файлы `_G(N+1).drawregion`.
-2. **Sync**: Вызов `fsync()` для всех новых данных.
-3. **Commit**: Обновление `manifest.json` (атомарная замена файла через `replaceItemAt`).
-4. **Recovery**: При открытии движок читает только те файлы, которые указаны в `lastSuccessfulGeneration`. Недописанные файлы игнорируются.
+### Алгоритм "Safe Save" (WAL):
+1. **Prepare**: Запись новых тайлов/блоков в WAL (`history/tx_...`).
+2. **Sync**: Вызов `fsync()` для данных.
+3. **Commit**: Обновление `manifest.json` через атомарный swap.
+4. **Recovery**: При сбое система выполняет replay WAL до последней валидной записи в манифесте.
 
 ---
 

@@ -10,7 +10,9 @@
 
 *   **Размер тайла**: 256x256 пикселей.
 *   **Формат пикселя**: **RGBA16Float** (8 байт на пиксель) для Pro-level рендеринга.
-*   **Регион**: Группа 4x4 тайла (1024x1024 пикселя). Базовая единица I/O и LZ4-сжатия.
+*   **Регион**: Группа 4x4 тайла (1024x1024 пикселя). Базовая единица пространственного индекса.
+*   **Tile-centric Snapshot**: Снапшоты Undo/Redo оперируют на уровне отдельных тайлов (256x256).
+*   **Block Delta**: Внутри тайла отслеживаются изменения на уровне блоков 64x64 (16 блоков на тайл) для минимизации Write Amplification.
 *   **Поддержка Sparse Textures**: Использование `MTLSparseTexture` для холстов до **32k x 32k** (и выше). Физическая память (64KB страницы) выделяется только под активные области.
 *   **Layers**: Физическое хранение данных слоев. Адресация: `[LayerID: MTLSparseTexture]`. Управление логикой (порядок, прозрачность) вынесено в `LayerManager`. Подробнее в `layer_system_specification.md`.
 
@@ -26,10 +28,14 @@
 
 ### 2.2 TileSystem (Actor) — Residency Manager
 *   **MTLHeap Slot Management**: Текстуры аллоцируются из **Placement Heap**. Фиксированный размер тайлов исключает фрагментацию.
+*   **Tile-Level Dirty Tracking (TLDT)**: 
+    - Использование Bitset масок (один бит на тайл). 
+    - Шейдеры отрисовки помечают затронутые тайлы. 
+    - `UndoCoordinator` использует эту маску для выборочного копирования (sparse copy) в VRAM.
 *   **3-Level Caching Strategy**:
-    1.  **L1: VRAM (Resident)**: Лимит **512MB**. `MTLSparseTexture` страницы, отображенные в физическую память через `MTLHeap`. Прямой доступ GPU.
-    2.  **L2: LZ4 RAM (Warm)**: Системная RAM. Тайлы хранятся в сжатом LZ4 виде. Используется для быстрого восстановления (Undo/Redo) и предиктивной подгрузки.
-    3.  **L3: Disk (Cold)**: Файловая система. LZ4-сжатые блоки регионов (4x4 тайла).
+    1.  **L1: VRAM (Resident)**: Лимит **512MB**. `MTLSparseTexture` страницы + VRAM-снапшоты текущих транзакций.
+    2.  **L2: LZ4 RAM (Warm)**: Системная RAM. Тайлы и Block Deltas (64x64) хранятся в сжатом LZ4 виде.
+    3.  **L3: Disk (Cold)**: Файловая система. WAL (Write-Ahead Log) записей и снапшоты регионов.
 *   **Layer Priority Eviction**:
     При достижении лимита VRAM (512MB) вытеснение происходит в следующем порядке:
     1.  **Invisible Layers**: Скрытые слои вытесняются первыми (LRU внутри группы).
@@ -42,10 +48,11 @@
     3. **Eviction**: При достижении лимита вызывается `unmap` для старейших страниц через `MTLResourceStateCommandEncoder`.
 *   **Viewport-Aware LRU**: Тайлы, видимые во вьюпорте, имеют иммунитет к выгрузке (`refCount > 0`).
 
-### 2.3 DataActor (Background I/O & Compression)
+### 2.3 DataActor (Background I/O & History)
+*   **WAL & History Store**: Каждое изменение (мазок, операция со слоем) записывается в WAL-журнал с CRC32c валидацией.
 *   **LZ4 Snapshot Pipeline**: Фоновое сжатие снапшотов Undo/Redo в RAM.
-*   **Memory Pressure Relay**: При системном `Memory Warning` происходит немедленный сброс (flush) всех LZ4-снапшотов из RAM на диск.
-*   **Atomic Saves**: Использование временных файлов и `rename()` для безопасности.
+*   **Memory Pressure Relay**: При системном `Memory Warning` происходит немедленный сброс (flush) всех LZ4-снапшотов из RAM на диск в `HistoryStore`.
+*   **Atomic Saves**: Использование временных файлов, `fsync()` и `rename()` для безопасности манифеста.
 
 ### 2.4 Tile (Data Container)
 Три состояния контента:

@@ -10,11 +10,11 @@
 *   **Tile-Level Dirty Tracking (TLDT)**: Использование Bitset масок для отслеживания измененных тайлов (256x256) и блоков (64x64), что снижает объем копирования в VRAM и Write Amplification.
 *   **Serial Commit Pipeline**: Гарантированный FIFO-порядок транзакций через `AsyncStream` или серийную очередь задач в `UndoCoordinator`.
 *   **Global Occupancy Map**: Иерархическая битовая маска для пропуска пустых областей при композитинге.
-*   **5-Actor Model**: Разделение ответственности между `DrawingSession` (UI), `StrokeProcessor` (Math), `TileSystem` (GPU), `DataActor` (I/O) и `UndoCoordinator` (Transactions).
+*   **6-Actor Model**: Разделение ответственности между `DrawingSession` (UI Orchestrator), `LayerManager` (Logic Hierarchy), `StrokeProcessor` (Math), `TileSystem` (Resource Manager), `DataActor` (I/O) и `UndoCoordinator` (Transactions).
 *   **Residency Manager**: Контроль физической памяти через 
 `MTLResidencySet`, LRU и **Layer Priority** (Active > Visible 
-> Background > Invisible).
-*   **FrameContext & Handshake**: Синхронный рендеринг без Actor Hopping через предварительное подтверждение ресурсов.
+> Background > Invisible). Реализует механизм `ResidencySnapshot` для Zero-Latency рендеринга.
+*   **FrameContext & Handshake**: Синхронный рендеринг без Actor Hopping через предварительное подтверждение ресурсов в `TileSystem` и получение иммутабельного `ResidencySnapshot`.
 *   **Package-First Architecture (.drawproj)**: Хранение проекта как пакета с WAL-журналом и манифестом поколений (**Global Transaction Index**) для атомарности и сохранения истории Undo/Redo.
 
 ## 💾 Управление памятью и буферизация

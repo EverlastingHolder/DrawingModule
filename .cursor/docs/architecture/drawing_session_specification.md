@@ -8,32 +8,31 @@
 
 ## 1️⃣ Архитектурная декомпозиция (Actor Isolation)
 
-Система разделена на 5 независимых доменов изоляции (Swift 6 Ready):
+Система разделена на 6 независимых доменов изоляции (Swift 6 Ready):
 
 ### 1.1 DrawingSession (@MainActor)
-*   **Роль**: Оркестратор и владелец состояния.
-*   **Ответственность**: Владение `CanvasEnvironment`, `LayerManager` и `UndoCoordinator`, координация UI.
-*   **Синхронизация**: Формирует `LayerStackSnapshot` перед каждым кадром и передает его в `Compositor`.
+*   **Роль**: Root Orchestrator.
+*   **Ответственность**: Владение `CanvasEnvironment`, обработка UI-ввода, координация жизненного цикла кадра (Frame Lifecycle) и связь между акторами.
 
-### 1.2 UndoCoordinator (Actor)
-*   **Роль**: Координатор транзакций и истории.
-*   **Ответственность**: Управление жизненным циклом транзакций (begin/commit), Stroke Coalescing, обеспечение FIFO через Serial Commit Pipeline.
+### 1.2 LayerManager (@MainActor)
+*   **Роль**: Logical Hierarchy Manager.
+*   **Ответственность**: Управление структурой слоев (Z-index, группы), их метаданными (Blending, Opacity) и иерархией. Формирует `LayerStackSnapshot` для рендерера и Undo-системы.
 
-### 1.3 LayerManager (@MainActor)
-*   **Роль**: Менеджер структуры документа.
-*   **Ответственность**: Управление стеком слоев, их метаданными (Blending, Opacity) и иерархией. Предоставляет снимки состояния для `UndoCoordinator`.
+### 1.3 UndoCoordinator (Actor)
+*   **Роль**: Transaction Manager.
+*   **Ответственность**: Управление FIFO-очередью транзакций через Serial Commit Pipeline, Stroke Coalescing, обеспечение консистентности истории.
 
 ### 1.4 StrokeProcessor (Actor)
-*   **Роль**: Фоновый вычислитель геометрии и драйвер Undo-событий.
-*   **Ответственность**: Интерполяция сплайнов, 2-Tier Region Binning, расчет `damagedRect` для `captureBefore`.
+*   **Роль**: Math Engine.
+*   **Ответственность**: Интерполяция сплайнов (Catmull-Rom), World-to-Tile биннинг, расчет `damagedRect` для TLDT и предиктивное разворачивание (Predictive Unfolding).
 
 ### 1.5 TileSystem (Actor)
-*   **Роль**: Residency Manager и менеджер ресурсов GPU.
-*   **Ответственность**: Управление `MTLSparseTexture`, маппинг страниц, Tile-Level Dirty Tracking (TLDT) для оптимизации снапшотов.
+*   **Роль**: Resource & Residency Manager.
+*   **Ответственность**: Владение `MTLSparseTexture`, управление `MTLHeap` и `MTLResidencySet`, генерация `ResidencySnapshot`, реализация CoW (Copy-on-Write) на уровне тайлов.
 
 ### 1.6 DataActor (Actor)
-*   **Роль**: Асинхронный I/O и компрессия.
-*   **Ответственность**: LZ4-сжатие, атомарная запись WAL и манифеста, обработка HistoryStore.
+*   **Роль**: I/O Engine.
+*   **Ответственность**: LZ4-сжатие, атомарная запись WAL (Write-Ahead Log) и манифеста, фоновая персистентность.
 
 ---
 
@@ -98,6 +97,7 @@ public struct CanvasEnvironment: Sendable, Equatable {
 1.  **Stall**: Остановка всех Metal-задач.
 2.  **Re-allocation**: Пересоздание `MTLHeap` и запросов нового устройства.
 3.  **Re-hydration**: Ленивое восстановление данных из `DataActor`.
+4.  **Active Stroke Replay**: `StrokeProcessor` заново генерирует геометрию для незавершенного мазка на основе сохраненных в CPU-памяти точек. Подробнее в `reliability_persistence_specification.md`.
 
 ---
 

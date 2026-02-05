@@ -10,7 +10,7 @@
 | **Issue 1: WA & IO Collapse** | Region-centric snapshot (4x4 tiles) for every stroke. | Tile-centric + Block Delta (64x64) + Stroke Coalescing. | **Systems Engineer**: Снижение WA в десятки раз. | Улучшен FPS и IO, но один Undo может отменить серию мазков. |
 | **Issue 2: GPU Bubbles** | Snapshot phase -> write phase sequential in Command Buffer. | Tile-Level Dirty Tracking (TLDT) + MTLFence. | **Metal Specialist**: Снижение объема VRAM копирования в 64 раза. | Стабильные 120 FPS за счет sparse copy. |
 | **Issue 3: FIFO Races** | Reentrancy risks in Transaction Index at 1000Hz. | Serial Commit Pipeline (AsyncStream/TaskQueue). | **Architect**: Гарантированный FIFO порядок транзакций. | Устранение гонок, небольшое увеличение latency коммитов. |
-| **God-object Risk** | UndoCoordinator calculated dirty regions and managed state. | Dirty logic moved to StrokeProcessor. | **Lead Architect**: Четкое разделение ответственности. | Чистая архитектура, облегчение тестирования. |
+| **God-object Risk** | UndoManager calculated dirty regions and managed state. | Dirty logic moved to StrokeProcessor. | **Lead Architect**: Четкое разделение ответственности. | Чистая архитектура, облегчение тестирования. |
 
 ## Источники (база архитектуры)
 - `project_knowledge_base.md`: 6-actor model, LZ4 snapshot pipeline, Global Transaction Index, `.drawproj`.
@@ -37,7 +37,7 @@
 Undo/Redo проектируется как транзакционный журнал с snapshot-redo по умолчанию и reapply только для детерминированных действий. История хранится в `.drawproj` вместе с манифестом и Global Transaction Index, что обеспечивает экспорт/импорт без потери undo/redo.
 
 ## Core Components
-- **UndoCoordinator** (actor): оркестратор транзакций с гарантированным FIFO-порядком через Serial Commit Pipeline. Отвечает за жизненный цикл транзакций и Stroke Coalescing.
+- **UndoManager** (actor): оркестратор транзакций с гарантированным FIFO-порядком через Serial Commit Pipeline. Отвечает за жизненный цикл транзакций и Stroke Coalescing (интервал 500мс).
 - **HistoryStore** (actor): сериализация истории и атомарные коммиты.
 - **Snapshotter**: захват before/after снапшотов на уровне отдельных тайлов (256x256).
 - **ActionRegistry**: реестр кастомных действий и декодеров.
@@ -46,7 +46,7 @@ Undo/Redo проектируется как транзакционный жур�
 
 ## Public Contracts
 ```swift
-public protocol UndoCoordinating: Actor {
+public protocol UndoManaging: Actor {
     /// Инициализирует транзакцию. Возвращает токен для идентификации.
     func begin(label: String) async -> TransactionToken
     
@@ -56,6 +56,9 @@ public protocol UndoCoordinating: Actor {
     
     /// Фиксация состояния ПОСЛЕ мутации. Использует область из captureBefore.
     func captureAfter(_ token: TransactionToken) async throws
+    
+    /// Слияние данных мазка: mergedData.append(operation.data)
+    func mergeStrokeData(_ token: TransactionToken, data: Data) async
     
     func commit(_ token: TransactionToken) async throws
     func abort(_ token: TransactionToken) async
@@ -84,7 +87,7 @@ public protocol UndoableAction: Sendable {
 - Снапшоты LZ4, индексы по тайлам.
 
 ## Integration Plan
-- `DrawingSession` инициирует транзакции через `UndoCoordinator`.
+- `DrawingSession` инициирует транзакции через `UndoManager`.
 - `LayerManager` отдаёт `LayerStackSnapshot`.
 - `StrokeProcessor` — основной драйвер данных: вычисляет `damagedRect` и инициирует `captureBefore`.
 - `TileSystem` обеспечивает COW/VRAM на уровне тайлов.
@@ -105,31 +108,32 @@ public protocol UndoableAction: Sendable {
 # Уровень 2 — Interaction Design (APPROVED)
 
 ## Components & DI
-- `UndoCoordinator` зависит только от протоколов (HistoryStore, Snapshotter, ActionRegistry, BudgetController).
+- `UndoManager` зависит только от протоколов (HistoryStore, Snapshotter, ActionRegistry, BudgetController).
 - `CanvasStateActor` (read-only) предоставляет `LayerStackSnapshot` вне `@MainActor`.
 
 ## Actor Boundaries
-- `@MainActor`: `DrawingSession`, `LayerManager`.
-- `UndoCoordinator` actor: транзакции и FIFO-очередь (Serial Commit Pipeline).
+- `@MainActor`: `DrawingSession`.
+- `LayerManager` actor: управление слоями.
+- `UndoManager` actor: транзакции и FIFO-очередь (Serial Commit Pipeline).
 - `HistoryStore` actor: журнал и persistence.
 - `DataActor` actor: LZ4 + disk.
 - GPU/TileSystem отделен, доступ через протоколы с использованием `MTLFence`.
 
 ## Data Flow Sequences
 **Stroke (Оптимизировано)**
-1. `DrawingSession` -> `UndoCoordinator.begin()`.
+1. `DrawingSession` -> `UndoManager.begin()`.
 2. `StrokeProcessor` в реальном времени вычисляет `damagedRect` (bounding box сегмента + padding).
-3. `StrokeProcessor` -> `UndoCoordinator.captureBefore(token, dirtyRect: damagedRect)`.
-4. `UndoCoordinator` делегирует `Snapshotter` захват только **измененных тайлов** (Tile-Level Dirty Tracking).
+3. `StrokeProcessor` -> `UndoManager.captureBefore(token, dirtyRect: damagedRect)`.
+4. `UndoManager` делегирует `Snapshotter` захват только **измененных тайлов** (Tile-Level Dirty Tracking).
 5. По завершении мазка: `captureAfter` -> async GPU fence -> `commit`.
 
-## Структура UndoCoordinator (Варианты)
+## Структура UndoManager (Варианты)
 
 ### Вариант А: "Serial Pipeline Actor" (Рекомендуемый)
 Использование внутреннего `AsyncStream` или серийной очереди задач для обработки событий транзакций.
 - **Trade-offs:**
     - **(+) Гарантированный FIFO**: Полностью устраняет гонки в `Global Transaction Index`.
-    - **(+) Встроенный Coalescing**: Легко реализовать накопление мелких `damagedRect` по таймеру.
+    - **(+) Встроенный Coalescing**: Легко реализовать накопление мелких `damagedRect` по таймеру (500мс).
     - **(–) Latency**: Все транзакции (даже не связанные) проходят через единое "горлышко".
 
 ### Вариант Б: "Distributed Transaction Registry"
@@ -180,7 +184,7 @@ public protocol UndoableAction: Sendable {
 Crash: `MARK` без `COMMIT` -> ничего не удаляем.
 
 ## Scheduling & FIFO Commit Pipeline
-- **Serial Dispatcher**: `UndoCoordinator` использует внутренний `AsyncStream` или серийный `TaskQueue` для обработки коммитов. Это гарантирует FIFO-порядок и предотвращает гонки при реентерабельности акторов.
+- **Serial Dispatcher**: `UndoManager` использует внутренний `AsyncStream` или серийный `TaskQueue` для обработки коммитов. Это гарантирует FIFO-порядок и предотвращает гонки при реентерабельности акторов.
   - Любой `commit()` помещается в очередь и дожидается завершения предыдущего I/O в `HistoryStore`.
 - **Adaptive Pressure Control**: 
   - При задержках I/O (Pressure > 0.4) увеличивается агрессивность Stroke Coalescing.

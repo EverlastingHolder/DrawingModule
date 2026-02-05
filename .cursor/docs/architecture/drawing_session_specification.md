@@ -14,13 +14,13 @@
 *   **Роль**: Root Orchestrator.
 *   **Ответственность**: Владение `CanvasEnvironment`, обработка UI-ввода, координация жизненного цикла кадра (Frame Lifecycle) и связь между акторами.
 
-### 1.2 LayerManager (@MainActor)
+### 1.2 LayerManager (actor)
 *   **Роль**: Logical Hierarchy Manager.
-*   **Ответственность**: Управление структурой слоев (Z-index, группы), их метаданными (Blending, Opacity) и иерархией. Формирует `LayerStackSnapshot` для рендерера и Undo-системы.
+*   **Ответственность**: Управление структурой слоев (Z-index, группы), их метаданными (Blending, Opacity) и иерархией. Формирует `LayerStackSnapshot` для рендерера и Undo-системы. Автоматически управляет дегидратацией скрытых слоев.
 
-### 1.3 UndoCoordinator (Actor)
+### 1.3 UndoManager (actor)
 *   **Роль**: Transaction Manager.
-*   **Ответственность**: Управление FIFO-очередью транзакций через Serial Commit Pipeline, Stroke Coalescing, обеспечение консистентности истории.
+*   **Ответственность**: Управление FIFO-очередью транзакций через Serial Commit Pipeline, Stroke Coalescing (500ms), обеспечение консистентности истории.
 
 ### 1.4 StrokeProcessor (Actor)
 *   **Роль**: Math Engine.
@@ -60,30 +60,34 @@ public struct CanvasEnvironment: Sendable, Equatable {
 
 ### 3.1 Подготовка кадра (Main Thread)
 1.  Обработка пользовательского ввода.
-2.  Обновление `LayerManager` (изменение видимости, прозрачности).
-3.  Генерация `LayerStackSnapshot`.
+2.  Параллельное получение данных (`async let`):
+    *   `layerStack = layerManager.getSnapshot()`
+    *   `geometry = strokeProcessor.getSnapshot()`
+3.  Генерация `ResidencySnapshot` через `tileSystem.prepareResidency(layerStack, geometry)`.
 
 ### 3.2 Рендеринг (GPU/Render Thread)
-1.  **Input**: Получение `LayerStackSnapshot` и текущих геометрических данных от `StrokeProcessor`.
-2.  **Resource Check**: Запрос у `TileSystem` подтверждения готовности (Residency) тайлов для всех `storageID` из снимка.
+1.  **Input**: Использование синхронного `ResidencySnapshot`, подготовленного заранее.
+2.  **Resource Safety**: `ResidencySnapshot` гарантирует резидентность всех необходимых текстур в VRAM.
 3.  **Command Encoding**:
     *   Кодирование команд композитинга на основе данных из снимка.
     *   Использование `LayerState.opacity` и `LayerState.blendMode` как констант в Argument Buffers.
-4.  **Submission**: Отправка команд в `MTLCommandQueue`.
+4.  **Submission & Cleanup**: 
+    *   Отправка команд в `MTLCommandQueue`.
+    *   `ResidencySnapshot.onComplete`: Автономное освобождение семафора и возврат ресурсов в пул после завершения GPU-задач.
 
 ## 4️⃣ Жизненный цикл мазка (Transactional Stroke)
 
-1.  **Begin**: `DrawingSession` инициирует транзакцию в `UndoCoordinator.begin()`.
+1.  **Begin**: `DrawingSession` инициирует транзакцию в `UndoManager.begin()`.
 2.  **Process & Capture**: 
     *   `StrokeProcessor` вычисляет `damagedRect`.
-    *   `UndoCoordinator.captureBefore(token, dirtyRect)` делает снапшот измененных тайлов.
+    *   `UndoManager.captureBefore(token, dirtyRect)` делает снапшот измененных тайлов.
     *   `TileSystem` использует TLDT для минимизации копирования.
 3.  **Update**: Рендеринг мазка в `LiveStrokeBuffer`.
 4.  **Commit**: 
     *   `captureAfter` захватывает финальное состояние.
-    *   `UndoCoordinator.commit()` ставит задачу в Serial Commit Pipeline.
+    *   `UndoManager.commit()` ставит задачу в Serial Commit Pipeline.
     *   `DataActor` сжимает данные и пишет в WAL.
-5.  **Rollback**: `UndoCoordinator.abort()` или `undo()` восстанавливает состояние из тайловых снапшотов.
+5.  **Rollback**: `UndoManager.abort()` или `undo()` восстанавливает состояние из тайловых снапшотов.
 
 ---
 
@@ -104,10 +108,10 @@ public struct CanvasEnvironment: Sendable, Equatable {
 ## 5️⃣ Сохранение и История (DataActor)
 
 ### 5.1 Приоритезация
-*   **High Priority**: Undo/Redo и подгрузка тайлов для вьюпорта (< 8ms).
+*   **High Priority**: Undo/Redo (через `UndoManager`) и подгрузка тайлов для вьюпорта (< 8ms).
 *   **Low Priority**: Автосохранение и фоновое сжатие.
 
 ### 5.2 Atomic Save Protocol
 1.  **Staging**: Запись во временный `.tmp` файл.
-2.  **Validation**: `fsync()` и проверка контрольной суммы (CRC32).
-3.  **Atomic Swap**: Использование `replaceItemAt` для безопасной замены файла.
+2.  **Validation**: `fsync()` и проверка контрольной суммы (CRC32c).
+3.  **Atomic Swap**: Использование `replaceItemAt` (DataActor) для безопасной замены файла без создания бэкапов.

@@ -43,8 +43,11 @@ public struct ResidencySnapshot: Sendable {
     /// Ресурсы, необходимые для кастомных эффектов в текущем кадре.
     public let customEffectResources: [MTLResource]
     
-    /// Дескрипторы Argument Buffers для передачи в инкодер.
-    public let effectArgumentBuffers: [UUID: MTLBuffer]
+    /// Флаг адаптивного качества: упрощение рендеринга при высокой нагрузке.
+    public let shouldSimplifyRendering: Bool
+    
+    /// Замыкание для автономного освобождения семафора и очистки после GPU.
+    public let onComplete: @Sendable () -> Void
 }
 
 /// Иммутабельный снимок геометрии от StrokeProcessor.
@@ -75,12 +78,13 @@ public typealias StorageID = UInt16
 
 ### Фаза 1: Запрос (Main Thread / @MainActor)
 1. `DrawingSession` получает сигнал начала кадра.
-2. Он собирает `LayerStackSnapshot` (порядок и свойства слоев).
+2. Параллельно запрашивает данные (`async let`) у `LayerManager` и `StrokeProcessor`.
 3. Формирует `ViewContext` (текущий Viewport, Scale).
-4. Вызывает асинхронный запрос к `TileSystem`: `prepareResidency(for: viewContext, layers: layerStack)`.
+4. Вызывает асинхронный запрос к `TileSystem`: `prepareResidency(for: viewContext, layers: layerStack, geometry: geometry)`.
 
 ### Фаза 2: Подготовка (TileSystem Actor)
-1. `TileSystem` определяет список необходимых тайлов на основе `ViewContext` и `LayerStackSnapshot`.
+1. `TileSystem` использует уже готовые данные слоев (`LayerStackSnapshot`) и геометрии (`GeometrySnapshot`).
+2. Определяет список необходимых тайлов на основе `ViewContext` и снимков.
 2. Выполняет `unmap` старых страниц и `map` новых (Sparse Texture Management).
 3. Добавляет новые ресурсы в `MTLResidencySet`.
 4. Генерирует новый `ResidencySnapshot`.

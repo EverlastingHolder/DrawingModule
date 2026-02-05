@@ -10,14 +10,17 @@
 
 Система слоев разделена на два уровня ответственности для обеспечения производительности и чистоты кода.
 
-### 1.1 Logical Level (`LayerManager` / `@MainActor`)
+### 1.1 Logical Level (`LayerManager` / `actor`)
 *   **Роль**: Владелец структуры документа и метаданных.
 *   **Ответственность**:
     *   Порядок слоев (Z-Index).
     *   Группировка слоев (Tree structure).
     *   Метаданные: `Opacity`, `Visibility`, `BlendMode`, `IsLocked`.
+    *   Состояние слоя (`LayerState`): `active`, `cached`, `cold`.
+    *   **Автоматическая дегидратация**: Скрытые слои автоматически переводятся в состояние `cold`, освобождая VRAM.
+    *   **Resource Limiting**: Лимит в 100 одновременно активных текстур на весь документ.
     *   Специфические свойства: `Clipping Mask`, `Adjustment Layer` данные.
-    *   **Undo Integration**: Предоставляет `LayerStackSnapshot` для `UndoCoordinator` при выполнении операций со слоями.
+    *   **Undo Integration**: Предоставляет `LayerStackSnapshot` для `UndoManager` при выполнении операций со слоями.
 *   **Связь**: Каждому логическому слою соответствует уникальный `LayerID` (UUID или Int).
 
 ### 1.2 Physical Level (`TileSystem` / `actor`)
@@ -37,6 +40,12 @@
 Для соблюдения требований Swift 6 и исключения "Actor Hopping", состояние слоя разделено на изменяемый объект управления и неизменяемый снимок состояния.
 
 ```swift
+public enum LayerStateStatus: Sendable {
+    case active
+    case cached
+    case cold
+}
+
 public enum BlendMode: String, Sendable {
     case normal, multiply, screen, overlay, darken, lighten, colorDodge, colorBurn
 }
@@ -49,6 +58,7 @@ public struct LayerState: Sendable, Identifiable {
     public let isVisible: Bool
     public let opacity: Float
     public let blendMode: BlendMode
+    public let status: LayerStateStatus
     
     // Иерархия и маски
     public let parentID: UUID?
@@ -64,6 +74,7 @@ public struct LayerState: Sendable, Identifiable {
         isVisible: Bool,
         opacity: Float,
         blendMode: BlendMode,
+        status: LayerStateStatus = .active,
         parentID: UUID? = nil,
         isClippingMask: Bool = false,
         adjustmentData: [String: Sendable]? = nil
@@ -74,6 +85,7 @@ public struct LayerState: Sendable, Identifiable {
         self.isVisible = isVisible
         self.opacity = opacity
         self.blendMode = blendMode
+        self.status = status
         self.parentID = parentID
         self.isClippingMask = isClippingMask
         self.adjustmentData = adjustmentData
@@ -104,6 +116,7 @@ public final class Layer: Identifiable {
     public var isVisible: Bool
     public var opacity: Float
     public var blendMode: BlendMode
+    public var status: LayerStateStatus
     
     public internal(set) var parentID: UUID?
     public var isClippingMask: Bool
@@ -119,6 +132,7 @@ public final class Layer: Identifiable {
         self.isVisible = true
         self.opacity = 1.0
         self.blendMode = .normal
+        self.status = .active
         self.isClippingMask = false
         self.adjustmentData = nil
     }
@@ -132,6 +146,7 @@ public final class Layer: Identifiable {
             isVisible: isVisible,
             opacity: opacity,
             blendMode: blendMode,
+            status: status,
             parentID: parentID,
             isClippingMask: isClippingMask,
             adjustmentData: adjustmentData
@@ -175,6 +190,7 @@ public final class Layer: Identifiable {
 ### 4.3 Оптимизация Sparse Page Table
 При наличии 100+ слоев накладные расходы на таблицы страниц (`Page Tables`) для каждой `MTLSparseTexture` могут достигать десятков мегабайт.
 *   **Unified Heap Mapping**: Использование единого `MTLHeap` для всех тайлов всех слоев.
+*   **Page Metadata**: Расход памяти на метаданные страниц составляет фиксированные 4KB на каждую физическую страницу.
 *   **Eviction Policy**: Приоритетное размапливание (unmap) невидимых или перекрытых слоев для освобождения Page Table Entries (PTE).
 *   **Lazy Mapping**: Таблицы страниц для новых слоев выделяются только при первой попытке рисования.
 

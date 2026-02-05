@@ -8,9 +8,9 @@
 *   **Тайловая система**: Холст разбит на тайлы 256х256. Использование **MTLSparseTexture** для 32k+ холстов.
 *   **3-Level Caching**: Гибридная память: VRAM (512MB) -> LZ4 RAM (Undo/Redo с Tile-centric snapshots) -> Disk (WAL + LZ4 Regions).
 *   **Tile-Level Dirty Tracking (TLDT)**: Использование Bitset масок для отслеживания измененных тайлов (256x256) и блоков (64x64), что снижает объем копирования в VRAM и Write Amplification.
-*   **Serial Commit Pipeline**: Гарантированный FIFO-порядок транзакций через `AsyncStream` или серийную очередь задач в `UndoCoordinator`.
+*   **Serial Commit Pipeline**: Гарантированный FIFO-порядок транзакций через `AsyncStream` или серийную очередь задач в `UndoManager`.
 *   **Global Occupancy Map**: Иерархическая битовая маска для пропуска пустых областей при композитинге.
-*   **6-Actor Model**: Разделение ответственности между `DrawingSession` (UI Orchestrator), `LayerManager` (Logic Hierarchy), `StrokeProcessor` (Math), `TileSystem` (Resource Manager), `DataActor` (I/O) и `UndoCoordinator` (Transactions).
+*   **6-Actor Model**: Разделение ответственности между `DrawingSession` (UI Orchestrator), `LayerManager` (Logic Hierarchy), `StrokeProcessor` (Math), `TileSystem` (Resource Manager), `DataActor` (I/O) и `UndoManager` (Transactions).
 *   **Residency Manager**: Контроль физической памяти через 
 `MTLResidencySet`, LRU и **Layer Priority** (Active > Visible 
 > Background > Invisible). Реализует механизм `ResidencySnapshot` для Zero-Latency рендеринга.

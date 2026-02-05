@@ -31,7 +31,7 @@
 *   **Tile-Level Dirty Tracking (TLDT)**: 
     - Использование Bitset масок (один бит на тайл). 
     - Шейдеры отрисовки помечают затронутые тайлы. 
-    - `UndoCoordinator` использует эту маску для выборочного копирования (sparse copy) в VRAM.
+    - `UndoManager` использует эту маску для выборочного копирования (sparse copy) в VRAM.
 *   **3-Level Caching Strategy**:
     1.  **L1: VRAM (Resident)**: Лимит **512MB**. `MTLSparseTexture` страницы + VRAM-снапшоты текущих транзакций.
     2.  **L2: LZ4 RAM (Warm)**: Системная RAM. Тайлы и Block Deltas (64x64) хранятся в сжатом LZ4 виде.
@@ -47,6 +47,7 @@
     2. **Hard Limit**: Общий объем резидентной памяти ограничен **512MB** (или 2.5x от площади Viewport).
     3. **Eviction**: При достижении лимита вызывается `unmap` для старейших страниц через `MTLResourceStateCommandEncoder`.
 *   **Viewport-Aware LRU**: Тайлы, видимые во вьюпорте, имеют иммунитет к выгрузке (`refCount > 0`).
+*   **Self-Healing LRU**: Механизм принудительного сброса `refCount` при таймауте (30 секунд) для предотвращения утечек ресурсов при зависании процессов.
 
 ### 2.3 DataActor (Background I/O & History)
 *   **WAL & History Store**: Каждое изменение (мазок, операция со слоем) записывается в WAL-журнал с CRC32c валидацией.
@@ -70,6 +71,7 @@
 *   **Usage**:
     - `Compositor`: Рендерит только те тайлы, где хотя бы один слой имеет бит `1` в GOM.
     - `StrokeProcessor`: Проверяет GOM для определения `affectedTiles`.
+*   **Optimization**: Использование `tileContentCount` для $O(1)$ обновления маски при стирании (удалении контента из тайла).
 *   **Atomic Operations**: Обновление маски происходит атомарно при переходе тайла из `Empty` в `Solid/Texture`.
 
 ---
@@ -97,7 +99,7 @@ func predictUnfolding(currentPos: CGPoint, velocity: CGPoint, brushRadius: CGFlo
 
 ## 4️⃣ Формат хранения (Persistence)
 
-*   **Unit**: Регион 4x4 (16 тайлов).
+*   **Physical Dehydration**: Метод `purgeLayerResources` вызывается при скрытии слоя или его выгрузке из памяти, освобождая физические ресурсы GPU.
 *   **WAL Journaling**: Каждое изменение метаданных и данных (Block Deltas) сначала записывается в WAL-журнал. 
     - Подробный протокол WAL и механизмы восстановления описаны в `reliability_persistence_specification.md`.
 *   **LZ4 Compression**: Сжатие Raw RGBA16Float данных перед записью. Снижает I/O на 60-80%.
@@ -112,12 +114,12 @@ func predictUnfolding(currentPos: CGPoint, velocity: CGPoint, brushRadius: CGFlo
 ```swift
 public protocol TileResidencyProvider: Actor {
     /// Фаза Handshake: подготовка резидентности для кадра.
-    func prepareResidency(for viewContext: ViewContext, layers: LayerStackSnapshot) async -> ResidencySnapshot
+    func prepareResidency(for viewContext: ViewContext, layers: LayerStackSnapshot, geometry: GeometrySnapshot) async -> ResidencySnapshot
     
     /// Запрос StorageID для записи. Реализует CoW, если тайл уже существует.
     func requestStorageForWrite(tile: TileCoord, layerID: UUID) async throws -> StorageID
     
-    /// Освобождение ресурсов (вызывается из UndoCoordinator при удалении истории).
+    /// Освобождение ресурсов (вызывается из UndoManager при удалении истории).
     func purgeStorage(ids: Set<StorageID>) async
 }
 ```

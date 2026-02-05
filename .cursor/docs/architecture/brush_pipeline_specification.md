@@ -31,7 +31,7 @@
 Для минимизации задержек (120 FPS):
 *   **MTLBuffer Storage**: Геометрия мазка хранится в `MTLBuffer` с `MTLStorageMode.shared`.
 *   **No memcpy**: `StrokeProcessor` пишет данные напрямую в указатель `buffer.contents()`. 
-*   **Undo Integration**: `StrokeProcessor` вычисляет `damagedRect` (bounding box сегмента + padding кисти) и инициирует `UndoCoordinator.captureBefore`.
+*   **Undo Integration**: `StrokeProcessor` вычисляет `damagedRect` (bounding box сегмента + padding кисти) и инициирует `UndoManager.captureBefore`.
 *   **Synchronization**: GPU начинает чтение буфера сразу после вызова `commit()`. Использование `MTLFence` гарантирует, что снапшоты для Undo захватывают верное состояние до мутации.
 
 ---
@@ -71,7 +71,7 @@
 
 ### 4.2 Deferred Mipmapping & TLDT
 Генерация мип-мапов выполняется асинхронно, используя данные от системы Undo/Redo:
-*   **Tile-Level Dirty Tracking (TLDT)**: Используется общая с `UndoCoordinator` маска грязных тайлов.
+*   **Tile-Level Dirty Tracking (TLDT)**: Используется общая с `UndoManager` маска грязных тайлов.
 *   **Trigger Strategy**:
     1.  **Stroke End**: Немедленная генерация для измененных тайлов (по TLDT маске) после поднятия стилуса.
     2.  **Idle Loop**: Генерация в моменты покоя (FPS > 110).

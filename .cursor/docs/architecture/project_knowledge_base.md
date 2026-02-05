@@ -10,7 +10,9 @@
 *   **Tile-Level Dirty Tracking (TLDT)**: Использование Bitset масок для отслеживания измененных тайлов (256x256) и блоков (64x64), что снижает объем копирования в VRAM и Write Amplification.
 *   **Serial Commit Pipeline**: Гарантированный FIFO-порядок транзакций через `AsyncStream` или серийную очередь задач в `UndoManager`.
 *   **Global Occupancy Map**: Иерархическая битовая маска для пропуска пустых областей при композитинге.
-*   **6-Actor Model**: Разделение ответственности между `DrawingSession` (UI Orchestrator), `LayerManager` (Logic Hierarchy), `StrokeProcessor` (Math), `TileSystem` (Resource Manager), `DataActor` (I/O) и `UndoManager` (Transactions).
+*   **6-Actor Model**: Разделение ответственности между `DrawingSession` (UI Orchestrator), `LayerManager` (Logic Hierarchy), `StrokeProcessor` (Math), `TileSystem` (Resource Manager), `DataActor` (I/O) и `UndoManager` (Transactions). Недавно введена абстракция **ToolSystem** для оркестрации инструментов.
+*   **Unified Tool Abstraction**: Разделение на **Stroke-based** (пути) и **Global-based** (заливка, фильтры) инструменты через `ToolManager`.
+*   **Material-Aware Rendering**: Поддержка физических свойств (вязкость, блеск, шероховатость) через вспомогательные **Sidecar Textures (RG8)**.
 *   **Residency Manager**: Контроль физической памяти через 
 `MTLResidencySet`, LRU и **Layer Priority** (Active > Visible 
 > Background > Invisible). Реализует механизм `ResidencySnapshot` для Zero-Latency рендеринга.
@@ -32,6 +34,9 @@
 *   **RGBA16Float**: HDR конвейер (яркость > 1.0).
 *   **Tile-based Compositing**: Смешивание слоев в один проход внутри **on-chip SRAM (Imageblocks)** для достижения 120 FPS.
 *   **Multi-pass Brush Pipeline**: Splat-Process-Composite конвейер для Smudge/Blur эффектов.
+*   **Glitter & Shimmer**: Процедурное сверкание через **Deterministic Spatial Hashing** и освещение на основе гироскопа.
+*   **Lip Gloss Model**: Имитация вязкого блеска через динамическую карту высот (Height Map) и MatCap отражения.
+*   **GPU Bucket Fill**: Производительная заливка на базе алгоритма **Jump Flooding (JFA)** с автоматическим закрытием разрывов (Gap Closing).
 *   **Register Pressure Limits**: Ограничение Smudge-ядра (32 регистра) для 100% occupancy на Apple Silicon.
 *   **Deferred Mipmapping**: Асинхронная генерация мипов в Idle-периоды или на Stroke End.
 *   **HDR to SDR Export**: ACES/Reinhard Tonemapping с дизерингом для 8-битного экспорта.

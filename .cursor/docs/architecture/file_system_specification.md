@@ -1,103 +1,92 @@
-# File System Specification: DrawingModule
+# File System Specification: Project Structure & Organization Policy
 
-**Status**: ✅ REFINED (After System Validator Audit V4)
-**Role**: Описание структуры исходного кода и организации файлов DrawEngine в соответствии с 6-Actor Model и Swift 6 Strict Concurrency.
+**Status**: ✅ REFINED (Audit V5 - Focus on File Distribution)
+**Role**: Единый стандарт размещения исходного кода, ресурсов и именования компонентов DrawEngine.
 
 ---
 
-## 📂 Общая структура проекта
+## 🏛 Общие принципы организации
 
-Проект организован по функциональным зонам ответственности. Все данные, передаваемые между акторами, изолированы в моделях (Snapshots) или типах Handshake-протокола.
+1.  **Strict Isolation**: Файлы распределяются по зонам ответственности (Core, Actors, Models, Rendering, Storage). Перекрестные зависимости между зонами минимизируются.
+2.  **Swift 6 Safety**: Все типы в `Models/` и `Core/Handshake/` обязаны быть `Sendable`.
+3.  **Actor Separation**: Папка `Actors/` содержит только реализации `actor` или объектов, инкапсулирующих состояние актора. Прокси-объекты для UI и модели данных выносятся в `Models/`.
+4.  **Predictability**: Местоположение нового файла должно быть очевидным исходя из его типа.
 
-```text
-Sources/DrawingModule/
-├── Core/                       # Фундамент: общие типы, протоколы и математика
-│   ├── Math/                   # Double-precision вычисления, Splines
-│   │   ├── SplineProcessor.swift (Catmull-Rom α=0.5)
-│   │   ├── GeometryUtils.swift
-│   │   ├── GlobalOccupancyMap.swift # [NEW] Иерархическая битовая маска
-│   │   └── CoordinateSpaces.swift (World to View conversion)
-│   ├── Handshake/              # [NEW] Типы синхронизации кадра (Zero-Latency)
-│   │   ├── FrameContext.swift      # Контейнер данных кадра
-│   │   ├── ResidencySnapshot.swift # Маппинг ресурсов
-│   │   └── GeometrySnapshot.swift  # Снапшот активных мазков
-│   ├── Protocols/              # Общие интерфейсы
-│   └── Constants.swift         # Лимиты (TileSize=256, VRAM limit=512MB)
-│
-├── Models/                     # Immutable Snapshots & Sendable Data
-│   ├── Layer/                  # Состояние слоев
-│   │   ├── LayerState.swift    # Снимок состояния (Sendable)
-│   │   └── LayerStackSnapshot.swift
-│   ├── Stroke/                 # Геометрия мазков
-│   │   └── StrokePoint.swift
-│   └── Tile/                   # Управление тайлами
-│       └── TileCoord.swift     # (x, y, layerID)
-│
-├── Actors/                     # 6-Actor Model (Ядро логики)
-│   ├── DrawingSession/         # Root Orchestrator (MainActor)
-│   │   ├── DrawingSession.swift
-│   │   └── InputProcessor.swift (UITouch/NSEvent)
-│   ├── LayerManager/           # Logic Hierarchy
-│   │   ├── LayerManager.swift
-│   │   └── LayerEntity.swift   # [RENAME] Логический объект (@MainActor)
-│   ├── TileSystem/             # Residency & Memory Manager
-│   │   ├── TileSystem.swift
-│   │   ├── SparsePageTable.swift # [NEW] Управление MTLHeap и Sparse Mapping
-│   │   ├── SnapshotPool.swift    # CoW логика
-│   │   ├── ResidencyManager.swift # MTLResidencySet & Retirement Queue
-│   │   └── DirtyTileTracker.swift # [MOVED] Bitset маски изменений (TLDT)
-│   ├── StrokeProcessor/        # Math Engine
-│   │   └── StrokeProcessor.swift
-│   ├── UndoManager/            # Transaction Manager
-│   │   ├── UndoManager.swift
-│   │   └── SerialCommitPipeline.swift
-│   └── DataActor/              # I/O Engine (WAL & LZ4)
-│       └── DataActor.swift     # Координатор фонового I/O
-│
-├── Rendering/                  # Metal Implementation
-│   ├── Shaders/                # .metal файлы
-│   │   ├── Compositing.metal   # Single-pass Imageblocks shader
-│   │   ├── BrushSplat.metal    # Splat-Process-Composite pipeline
-│   │   └── SharedTypes.h       # Общие структуры между Swift и Metal
-│   ├── Pipelines/              # Настройка состояний Metal
-│   │   ├── RenderPipelineDescriptor.swift
-│   │   └── ComputePipelineDescriptor.swift
-│   └── View/                   # UI Components
-│       └── MetalDrawView.swift # 120Hz Display Link
-│
-├── Storage/                    # Persistence & File Format
-│   ├── ProjectPackage/         # .drawproj handling
-│   │   ├── ProjectManifest.swift
-│   │   └── PackageLoader.swift
-│   ├── WAL/                    # [FIX] Единое место для логики журнала
-│   │   └── WALProcessor.swift  # CRC32c, LZ4 Block Deltas (64x64)
-│   └── Compression/            # Общие утилиты сжатия
-│       └── LZ4Service.swift
-│
-└── Extensions/                 # Metal & Foundation Helpers
-    ├── Metal+Extensions.swift  # Удобные обертки для MTLDevice/Buffer
-    └── SIMD+Extensions.swift
+### Схема выбора пути (Decision Tree)
+
+```mermaid
+graph TD
+    Start[Новый файл] --> Type{Что это?}
+    
+    Type -- "Логика / Состояние" --> ActorModel{Активный или пассивный?}
+    ActorModel -- "Actor (управляет данными)" --> Actors[Sources/DrawingModule/Actors/]
+    ActorModel -- "Struct/Snapshot (Sendable)" --> Models[Sources/DrawingModule/Models/]
+    ActorModel -- "UI Proxy (@MainActor)" --> Models
+    
+    Type -- "Фундамент / Математика" --> Core{Тип данных?}
+    Core -- "Чистая математика" --> Math[Sources/DrawingModule/Core/Math/]
+    Core -- "Синхронизация" --> Handshake[Sources/DrawingModule/Core/Handshake/]
+    Core -- "Интерфейс" --> Protocols[Sources/DrawingModule/Core/Protocols/]
+    
+    Type -- "Графика / Metal" --> Rendering{Что именно?}
+    Rendering -- "Шейдер (.metal/.h)" --> Shaders[Sources/DrawingModule/Rendering/Shaders/]
+    Rendering -- "Настройка Pipeline" --> Pipelines[Sources/DrawingModule/Rendering/Pipelines/]
+    Rendering -- "SwiftUI/AppKit View" --> View[Sources/DrawingModule/Rendering/View/]
+    
+    Type -- "Диск / Данные" --> Storage{Функция?}
+    Storage -- "Журнал (WAL)" --> WAL[Sources/DrawingModule/Storage/WAL/]
+    Storage -- "Формат проекта" --> Project[Sources/DrawingModule/Storage/ProjectPackage/]
+    Storage -- "Сжатие" --> Compression[Sources/DrawingModule/Storage/Compression/]
 ```
 
 ---
 
-## 🏛 Принципы организации (Updated V4)
+## 📂 Дерево папок и правила распределения
 
-### 1. Zero-Latency Handshake (`Core/Handshake/`)
-Все типы, участвующие в фазах 1-3 протокола синхронизации, выделены в отдельную папку. Это подчеркивает их критическую роль и гарантирует, что они являются `Sendable`. 
+```text
+Sources/DrawingModule/
+├── 📂 Core/                   # "Незыблемое" (No dependencies)
+│   ├── 📂 Math/               # Geometry, Splines, GOM
+│   ├── 📂 Handshake/          # Sendable snapshots for Frame Sync
+│   └── 📂 Protocols/          # API Contracts
+│
+├── 📂 Models/                 # "Данные" (Passive)
+│   ├── 📂 Layer/              # LayerState (Snapshot), LayerEntity (UI Proxy)
+│   ├── 📂 Stroke/             # StrokePoint, StrokeGeometry
+│   └── 📂 Tile/               # TileCoord, TileMetadata
+│
+├── 📂 Actors/                 # "Мозги" (6-Actor Model)
+│   ├── 📂 DrawingSession/     # Orchestrator
+│   ├── 📂 TileSystem/         # Resource/Memory Manager
+│   └── ...                    # Other 4 Actors
+│
+├── 📂 Rendering/              # "GPU" (Metal specific)
+│   ├── 📂 Shaders/            # .metal & SharedTypes.h
+│   ├── 📂 Pipelines/          # State descriptors
+│   └── 📂 View/               # MetalDrawView (DisplayLink)
+│
+└── 📂 Storage/                # "Persistence" (Disk I/O)
+    ├── 📂 WAL/                # Transaction Logs
+    └── 📂 ProjectPackage/     # .drawproj structure
+```
 
-### 2. Изоляция TileSystem
-Из-за высокой сложности управления `MTLSparseTexture` и `MTLHeap`, логика разделена:
-- `SparsePageTable.swift`: Низкоуровневый маппинг страниц.
-- `ResidencyManager.swift`: Управление `MTLResidencySet` и `Retirement Queue` (задержка в 3 кадра для GPU safety).
-- `DirtyTileTracker.swift`: Отслеживание изменений на уровне битсетов (TLDT) перенесено сюда для прямой связи с `TileSystem`.
+---
 
-### 3. Разделение Layer Logic
-`LayerEntity.swift` (@MainActor) — это ссылочный объект для UI. 
-`LayerState.swift` (Sendable) — это его иммутабельное отражение для рендерера и фоновых задач. Физическое разделение предотвращает случайное использование ссылочных типов в акторах.
+## 🏷 Соглашения об именовании
 
-### 4. Устранение дублирования WAL
-Вся низкоуровневая логика работы с бинарным журналом, CRC32c и LZ4-дельтами блоков (64x64) сосредоточена в `Storage/WAL/`. `DataActor` является лишь высокоуровневым координатором.
+| Тип компонента | Суффикс / Префикс | Пример | Папка |
+| :--- | :--- | :--- | :--- |
+| **Actor** | `...Actor` или функциональное имя | `DataActor`, `TileSystem` | `Actors/` |
+| **Snapshot (Sendable)** | `...Snapshot` или `...State` | `LayerState`, `GeometrySnapshot` | `Models/` |
+| **Metal Pipeline** | `...Descriptor` | `BrushRenderDescriptor` | `Rendering/Pipelines/` |
+| **UI Proxy (MainActor)** | `...Entity` | `LayerEntity` | `Models/` |
+| **Protocol** | `...Protocol` или `...ing` | `Drawable`, `TileManaging` | `Core/Protocols/` |
 
-### 5. Оптимизация композитинга
-`GlobalOccupancyMap.swift` (GOM) добавлен в `Core/Math/` как ключевой компонент для пропуска пустых областей холста, что критично для поддержания 120 FPS.
+---
+
+## 🛠 Правила добавления новых файлов
+
+1.  **Перед созданием**: Используйте Decision Tree для определения корневой папки.
+2.  **Если это Актор**: Проверьте, не нарушает ли он 6-Actor Model. Если функции нового актора можно делегировать существующему — делайте это.
+3.  **Если это Модель**: Она должна быть в папке `Models/` и быть `Sendable`. Если она нужна для UI — добавьте её в `Models/` с суффиксом `Entity`.
+4.  **Если это Metal-ресурс**: Все обертки над `MTLResource` должны находиться в `Rendering/` или управляться исключительно внутри `TileSystem`.

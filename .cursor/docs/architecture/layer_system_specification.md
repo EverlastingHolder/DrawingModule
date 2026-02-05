@@ -165,7 +165,7 @@ public final class Layer: Identifiable {
 2.  **Delete**: `LayerManager` удаляет объект -> `TileSystem` помечает все страницы этого `LayerID` как свободные и удаляет текстуру из словаря.
 
 ### 3.2 Изменение порядка (Reordering)
-*   Выполняется мгновенно на `@MainActor` в `LayerManager`.
+*   Выполняется мгновенно в `LayerManager`.
 *   Не требует никаких изменений в `TileSystem` или GPU-памяти (меняется только порядок итерации при композитинге).
 
 ---
@@ -175,7 +175,7 @@ public final class Layer: Identifiable {
 ### 4.1 Процесс отрисовки холста (Tile-based Shading)
 Для достижения стабильных **120 FPS** на Apple Silicon используется архитектура **TBDR (Tile-Based Deferred Rendering)** с применением **Imageblocks** и **Programmable Blending**.
 
-1.  **Snapshot Creation**: `@MainActor LayerManager` формирует `LayerStackSnapshot`.
+1.  **Snapshot Creation**: `LayerManager` формирует `LayerStackSnapshot`.
 2.  **Dispatch**: Снимок передается в поток рендеринга.
 3.  **Single-Pass Compositing**: Вместо последовательного блендинга через несколько Render Passes, все видимые слои смешиваются внутри одного прохода внутри **on-chip tile memory (SRAM)**.
     *   **Imageblock Layout**: В фрагментном шейдере определяется структура `Imageblock`, содержащая аккумуляторы цвета. Это исключает дорогостоящий Memory Bandwidth Roundtrip (VRAM -> GPU -> VRAM) для каждого слоя.

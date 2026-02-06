@@ -10,6 +10,15 @@
 
 Система разделена на 6 независимых доменов изоляции (Swift 6 Ready):
 
+Модульное размещение:
+*   `DrawingSession` → `DrawingSession`
+*   `LayerManager` → `DrawingLayers`
+*   `UndoManager` → `DrawingUndo`
+*   `StrokeProcessor` → `DrawingStroke`
+*   `TileSystem` → `DrawingTiles`
+*   `DataActor` → `DrawingStorage`
+*   Общие снимки/контракты → `DrawingFoundation`
+
 ### 1.1 DrawingSession (@MainActor)
 *   **Роль**: Root Orchestrator.
 *   **Ответственность**: Владение `CanvasEnvironment`, обработка UI-ввода, координация жизненного цикла кадра (Frame Lifecycle) и связь между акторами.

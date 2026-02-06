@@ -11,6 +11,8 @@
 *   **Serial Commit Pipeline**: Гарантированный FIFO-порядок транзакций через `AsyncStream` или серийную очередь задач в `UndoManager`.
 *   **Global Occupancy Map**: Иерархическая битовая маска для пропуска пустых областей при композитинге.
 *   **6-Actor Model**: Разделение ответственности между `DrawingSession` (UI Orchestrator), `LayerManager` (Logic Hierarchy), `StrokeProcessor` (Math), `TileSystem` (Resource Manager), `DataActor` (I/O) и `UndoManager` (Transactions). Недавно введена абстракция **ToolSystem** для оркестрации инструментов.
+*   **Module Design Policy**: Строгое соблюдение SOLID, лимитов на объем кода (300-400 строк на файл) и запрет на "Helper"-классы. См. [Module Design Policy](.cursor/docs/architecture/module_design_policy.md).
+*   **Physical Module Boundaries**: Подсистемы вынесены в отдельные модули (`DrawingFoundation`, `DrawingStroke`, `DrawingTiles`, `DrawingUndo`, `DrawingLayers`, `DrawingTools`, `DrawingRendering`, `DrawingStorage`, `DrawingSession`). См. [File System Specification](.cursor/docs/architecture/file_system_specification.md).
 *   **Unified Tool Abstraction**: Разделение на **Stroke-based** (пути) и **Global-based** (заливка, фильтры) инструменты через `ToolManager`.
 *   **Material-Aware Rendering**: Поддержка физических свойств (вязкость, блеск, шероховатость) через вспомогательные **Sidecar Textures (RG8)**.
 *   **Residency Manager**: Контроль физической памяти через 

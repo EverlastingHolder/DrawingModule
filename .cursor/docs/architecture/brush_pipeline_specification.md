@@ -16,6 +16,11 @@
 * **Tonemapping-Safe Smudge** (размазывание без "взрывов" яркости).
 * **Double Precision WorldSpace**: Поддержка холстов до **100,000 px** без дрожания (jitter).
 
+Модульное размещение:
+*   **DrawingRendering**: основной GPU-пайплайн и шейдеры.
+*   **DrawingFoundation**: общие контракты и снимки (`GeometrySnapshot`, `TileCoord`).
+*   **Интеграции**: `DrawingStroke` (геометрия), `DrawingTiles` (ресидентность), `DrawingUndo` (снапшоты).
+
 ---
 
 ## 2️⃣ Precision & Data Flow

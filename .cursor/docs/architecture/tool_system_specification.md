@@ -13,6 +13,12 @@
 2.  **Tool (Configuration & State)**: Иммутабельные настройки инструмента (Size, Opacity, Material Props).
 3.  **Pipeline (Execution)**: Разделение на **Stroke-based** (пути) и **Global-based** (заливка, фильтры) операции.
 
+### 1.1 Модульная привязка
+*   **DrawingTools**: `ToolManager`, `Tool`, `GlobalOperationProcessor`, `Materials`.
+*   **DrawingFoundation**: общие контракты и `Sendable`-типы.
+*   **DrawingRendering**: PSO/пайплайны и GPU-исполнение.
+*   **Интеграции**: `DrawingStroke`, `DrawingTiles`, `DrawingUndo` через снимки и протоколы.
+
 ---
 
 ## 2️⃣ Архитектура ToolManager

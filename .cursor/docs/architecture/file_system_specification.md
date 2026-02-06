@@ -1,42 +1,34 @@
 # File System Specification: Project Structure & Organization Policy
 
-**Status**: ✅ REFINED (Audit V5 - Focus on File Distribution)
+**Status**: ✅ REFINED (Audit V6 - Modular by Subsystems)
 **Role**: Единый стандарт размещения исходного кода, ресурсов и именования компонентов DrawEngine.
 
 ---
 
 ## 🏛 Общие принципы организации
 
-1.  **Strict Isolation**: Файлы распределяются по зонам ответственности (Core, Actors, Models, Rendering, Storage). Перекрестные зависимости между зонами минимизируются.
-2.  **Swift 6 Safety**: Все типы в `Models/` и `Core/Handshake/` обязаны быть `Sendable`.
-3.  **Actor Separation**: Папка `Actors/` содержит только реализации `actor` или объектов, инкапсулирующих состояние актора. Прокси-объекты для UI и модели данных выносятся в `Models/`.
-4.  **Predictability**: Местоположение нового файла должно быть очевидным исходя из его типа.
+1.  **Modular Isolation**: Исходники разделены по подсистемам (DrawingTiles, DrawingUndo, DrawingStroke, DrawingTools, DrawingLayers, DrawingStorage, DrawingRendering, DrawingSession).
+2.  **Foundation First**: Все кросс-модульные контракты, протоколы и `Sendable`-снапшоты находятся в `DrawingFoundation`.
+3.  **Actor Locality**: Реализация актора живет в модуле своей ответственности (например, `TileSystem` -> `DrawingTiles/Actor/`).
+4.  **Rendering / Storage Boundaries**: Metal-ресурсы только в `DrawingRendering` или `DrawingTiles`, disk I/O только в `DrawingStorage`.
+5.  **Predictability**: Местоположение нового файла должно быть очевидным исходя из ответственности.
 
 ### Схема выбора пути (Decision Tree)
 
 ```mermaid
 graph TD
-    Start[Новый файл] --> Type{Что это?}
-    
-    Type -- "Логика / Состояние" --> ActorModel{Активный или пассивный?}
-    ActorModel -- "Actor (управляет данными)" --> Actors[Sources/DrawingModule/Actors/]
-    ActorModel -- "Struct/Snapshot (Sendable)" --> Models[Sources/DrawingModule/Models/]
-    ActorModel -- "UI Proxy (@MainActor)" --> Models
-    
-    Type -- "Фундамент / Математика" --> Core{Тип данных?}
-    Core -- "Чистая математика" --> Math[Sources/DrawingModule/Core/Math/]
-    Core -- "Синхронизация" --> Handshake[Sources/DrawingModule/Core/Handshake/]
-    Core -- "Интерфейс" --> Protocols[Sources/DrawingModule/Core/Protocols/]
-    
-    Type -- "Графика / Metal" --> Rendering{Что именно?}
-    Rendering -- "Шейдер (.metal/.h)" --> Shaders[Sources/DrawingModule/Rendering/Shaders/]
-    Rendering -- "Настройка Pipeline" --> Pipelines[Sources/DrawingModule/Rendering/Pipelines/]
-    Rendering -- "SwiftUI/AppKit View" --> View[Sources/DrawingModule/Rendering/View/]
-    
-    Type -- "Диск / Данные" --> Storage{Функция?}
-    Storage -- "Журнал (WAL)" --> WAL[Sources/DrawingModule/Storage/WAL/]
-    Storage -- "Формат проекта" --> Project[Sources/DrawingModule/Storage/ProjectPackage/]
-    Storage -- "Сжатие" --> Compression[Sources/DrawingModule/Storage/Compression/]
+    Start[Новый файл] --> Scope{Где используется?}
+    Scope -- "Кросс-модульный контракт/тип" --> Foundation[Sources/DrawingFoundation/]
+    Scope -- "Подсистема" --> Domain{Какая?}
+
+    Domain -- "Stroke" --> Stroke[Sources/DrawingStroke/]
+    Domain -- "Tiles/Residency" --> Tiles[Sources/DrawingTiles/]
+    Domain -- "Undo/Redo" --> Undo[Sources/DrawingUndo/]
+    Domain -- "Layers" --> Layers[Sources/DrawingLayers/]
+    Domain -- "Tools" --> Tools[Sources/DrawingTools/]
+    Domain -- "Storage/I-O" --> Storage[Sources/DrawingStorage/]
+    Domain -- "Rendering/Metal" --> Rendering[Sources/DrawingRendering/]
+    Domain -- "Session/UI" --> Session[Sources/DrawingSession/]
 ```
 
 ---
@@ -44,30 +36,55 @@ graph TD
 ## 📂 Дерево папок и правила распределения
 
 ```text
-Sources/DrawingModule/
-├── 📂 Core/                   # "Незыблемое" (No dependencies)
-│   ├── 📂 Math/               # Geometry, Splines, GOM
-│   ├── 📂 Handshake/          # Sendable snapshots for Frame Sync
-│   └── 📂 Protocols/          # API Contracts
+Sources/
+├── 📦 DrawingFoundation/
+│   ├── 📂 Core/Math/
+│   ├── 📂 Core/Handshake/
+│   ├── 📂 Core/Protocols/
+│   └── 📂 Models/                 # Shared Sendable snapshots/contracts
 │
-├── 📂 Models/                 # "Данные" (Passive)
-│   ├── 📂 Layer/              # LayerState (Snapshot), LayerEntity (UI Proxy)
-│   ├── 📂 Stroke/             # StrokePoint, StrokeGeometry
-│   └── 📂 Tile/               # TileCoord, TileMetadata
+├── 📦 DrawingRendering/
+│   ├── 📂 Shaders/                 # .metal & SharedTypes.h
+│   ├── 📂 Pipelines/               # PSO descriptors
+│   └── 📂 View/                    # MetalDrawView
 │
-├── 📂 Actors/                 # "Мозги" (6-Actor Model)
-│   ├── 📂 DrawingSession/     # Orchestrator
-│   ├── 📂 TileSystem/         # Resource/Memory Manager
-│   └── ...                    # Other 4 Actors
+├── 📦 DrawingTools/
+│   ├── 📂 ToolManager/
+│   ├── 📂 Tools/                   # BrushTool, EraserTool, FillTool
+│   ├── 📂 Pipelines/               # GlobalOperationProcessor
+│   └── 📂 Materials/               # Sidecar contracts
 │
-├── 📂 Rendering/              # "GPU" (Metal specific)
-│   ├── 📂 Shaders/            # .metal & SharedTypes.h
-│   ├── 📂 Pipelines/          # State descriptors
-│   └── 📂 View/               # MetalDrawView (DisplayLink)
+├── 📦 DrawingStroke/
+│   ├── 📂 Actor/                   # StrokeProcessor
+│   ├── 📂 Models/                  # StrokePoint, GeometrySnapshot
+│   └── 📂 Processors/              # Spline, Binning, Prediction
 │
-└── 📂 Storage/                # "Persistence" (Disk I/O)
-    ├── 📂 WAL/                # Transaction Logs
-    └── 📂 ProjectPackage/     # .drawproj structure
+├── 📦 DrawingTiles/
+│   ├── 📂 Actor/                   # TileSystem
+│   ├── 📂 Models/                  # TileCoord, ResidencySnapshot
+│   ├── 📂 Residency/
+│   └── 📂 CoW/
+│
+├── 📦 DrawingUndo/
+│   ├── 📂 Actor/                   # UndoManager
+│   ├── 📂 Models/                  # TransactionToken, UndoRecord
+│   └── 📂 Pipeline/                # Serial Commit Pipeline
+│
+├── 📦 DrawingLayers/
+│   ├── 📂 Actor/                   # LayerManager
+│   ├── 📂 Models/                  # LayerState, LayerStackSnapshot
+│   └── 📂 Snapshot/
+│
+├── 📦 DrawingStorage/
+│   ├── 📂 Actor/                   # DataActor
+│   ├── 📂 WAL/                     # Write-Ahead Log
+│   ├── 📂 ProjectPackage/          # .drawproj structure
+│   └── 📂 Compression/             # LZ4
+│
+└── 📦 DrawingSession/
+    ├── DrawingSession.swift        # Root Orchestrator
+    ├── CanvasEnvironment.swift
+    └── 📂 FrameLifecycle/
 ```
 
 ---
@@ -76,17 +93,18 @@ Sources/DrawingModule/
 
 | Тип компонента | Суффикс / Префикс | Пример | Папка |
 | :--- | :--- | :--- | :--- |
-| **Actor** | `...Actor` или функциональное имя | `DataActor`, `TileSystem` | `Actors/` |
-| **Snapshot (Sendable)** | `...Snapshot` или `...State` | `LayerState`, `GeometrySnapshot` | `Models/` |
-| **Metal Pipeline** | `...Descriptor` | `BrushRenderDescriptor` | `Rendering/Pipelines/` |
-| **UI Proxy (MainActor)** | `...Entity` | `LayerEntity` | `Models/` |
-| **Protocol** | `...Protocol` или `...ing` | `Drawable`, `TileManaging` | `Core/Protocols/` |
+| **Actor** | `...Actor` или функциональное имя | `DataActor`, `TileSystem` | `Drawing*/Actor/` |
+| **Snapshot (Sendable)** | `...Snapshot` или `...State` | `LayerState`, `GeometrySnapshot` | `DrawingFoundation/Models/` или `Drawing*/Models/` |
+| **Metal Pipeline** | `...Descriptor` | `BrushRenderDescriptor` | `DrawingRendering/Pipelines/` |
+| **UI Proxy (MainActor)** | `...Entity` | `LayerEntity` | `DrawingFoundation/Models/` или `DrawingLayers/Models/` |
+| **Protocol** | `...Protocol` или `...ing` | `Drawable`, `TileManaging` | `DrawingFoundation/Core/Protocols/` |
 
 ---
 
 ## 🛠 Правила добавления новых файлов
 
-1.  **Перед созданием**: Используйте Decision Tree для определения корневой папки.
-2.  **Если это Актор**: Проверьте, не нарушает ли он 6-Actor Model. Если функции нового актора можно делегировать существующему — делайте это.
-3.  **Если это Модель**: Она должна быть в папке `Models/` и быть `Sendable`. Если она нужна для UI — добавьте её в `Models/` с суффиксом `Entity`.
-4.  **Если это Metal-ресурс**: Все обертки над `MTLResource` должны находиться в `Rendering/` или управляться исключительно внутри `TileSystem`.
+1.  **Сначала модуль**: Определите подсистему. Если тип используется несколькими модулями — это `DrawingFoundation`.
+2.  **Если это Actor**: Размещайте в `Drawing*/Actor/` модуля ответственности. Не нарушайте 6-Actor Model.
+3.  **Если это Модель**: Локальные модели — в `Drawing*/Models/`. Общие контракты и снапшоты — в `DrawingFoundation/Models/`. Все модели должны быть `Sendable`.
+4.  **Если это Metal-ресурс**: Только `DrawingRendering/` или (ресидентные ресурсы) внутри `DrawingTiles/`.
+5.  **Если это Disk I/O**: Только `DrawingStorage/` (WAL, ProjectPackage, Compression).

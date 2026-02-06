@@ -89,22 +89,26 @@
 
 ## 5. План реализации (Implementation Sequence)
 
-1.  **Phase 1: Math & Geometry**
+1.  **Phase 0: Module Scaffolding**
+    - [ ] Выделить модули: `DrawingFoundation`, `DrawingRendering`, `DrawingTools`, `DrawingStroke`, `DrawingTiles`, `DrawingUndo`, `DrawingLayers`, `DrawingStorage`, `DrawingSession`.
+    - [ ] Перенести общие контракты и `Sendable`-снапшоты в `DrawingFoundation`.
+    - [ ] Зафиксировать dependency-graph без циклов (подсистемы общаются через протоколы/снапшоты).
+2.  **Phase 1: Math & Geometry**
     - [ ] `StrokeProcessor`: Catmull-Rom (Double) & GeometrySnapshot.
     - [ ] **Active Stroke Replay** (CPU-side state).
     - [ ] CanvasGeometry: 2-Tier Region Binning.
-2.  **Phase 2: Tile System & Residency**
+3.  **Phase 2: Tile System & Residency**
     - [ ] `TileSystem`: `MTLSparseTexture`, `MTLHeap`.
     - [ ] **Retirement Queue** (3-frame delay).
     - [ ] **Handshake Protocol**: Фазы 1-3.
-3.  **Phase 3: Metal Pipeline & Hardening**
+4.  **Phase 3: Metal Pipeline & Hardening**
     - [ ] **Sub-Tiling (32x32)** & **Imageblocks** композитор.
     - [ ] Smudge Engine с Threadgroup Memory (< 32 регистра).
-4.  **Phase 4: Undo & Reliability**
+5.  **Phase 4: Undo & Reliability**
     - [ ] `UndoManager`: Serial Commit Pipeline.
     - [ ] **WAL**: CRC32c + LZ4 (**Block Delta 64x64**).
     - [ ] **Crash Recovery**: WAL Replay.
-5.  **Phase 5: Persistence & UX**
+6.  **Phase 5: Persistence & UX**
     - [ ] **Adaptive Pressure Control** (Backpressure).
     - [ ] `MetalDrawView`: 120Hz Display Link & Predictive Input.
     - [ ] Pro Export: Streaming mode (HDR/SDR).
